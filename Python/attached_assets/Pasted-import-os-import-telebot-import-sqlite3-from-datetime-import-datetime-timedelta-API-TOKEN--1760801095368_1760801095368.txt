@@ -1,0 +1,125 @@
+import os
+import telebot
+import sqlite3
+from datetime import datetime, timedelta
+
+API_TOKEN = '7628466810:AAHIiGViWOH3W6C7FbxQd0KZzqzFWcy3zKA'
+
+bot = telebot.TeleBot(API_TOKEN)
+
+conn = sqlite3.connect('users.db', check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        balance INTEGER DEFAULT 100, -- Начальный баланс 10 Драго
+        last_earn TEXT
+    )
+''')
+conn.commit()
+
+def get_balance(user_id):
+    cursor.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    if result:
+        return result[0]
+    else:
+        return None
+
+def add_user(user_id, username):
+    cursor.execute('INSERT OR IGNORE INTO users (user_id, username, balance) VALUES (?, ?, 100)', (user_id, username))
+    conn.commit()
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    add_user(user_id, username)
+    bot.reply_to(message, f"Привет, {message.from_user.first_name}! 👋 Добро пожаловать в  бота ролевой! 🪙\nТвой стартовый баланс: 10 Драго.\nИспользуй /help для списка команд.")
+
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    help_text = """
+    /balance - Узнать свой баланс
+    /earn - Заработать 10 (можно раз в 10 часов )
+    /transfer [@username] [amount] - Перевести Драго другому пользователю
+    Пример: /transfer @username 50
+    """
+    bot.reply_to(message, help_text)
+
+@bot.message_handler(commands=['balance'])
+def show_balance(message):
+    user_id = message.from_user.id
+    balance = get_balance(user_id)
+    if balance is not None:
+        bot.reply_to(message, f"💰 Твой баланс: {balance} Драго.")
+    else:
+        bot.reply_to(message, "Сначала напиши /start.")
+
+@bot.message_handler(commands=['earn'])
+def earn_coins(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    add_user(user_id, username)  
+
+    cursor.execute('SELECT last_earn FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    now = datetime.now().isoformat()
+
+    if result and result[0]:
+        last_earn = datetime.fromisoformat(result[0])
+        if datetime.now() - last_earn < timedelta(hour=10):
+            bot.reply_to(message, "❌ Слишком рано! Зарабатывать Драго можно раз в 10 минут.")
+            return
+
+    cursor.execute('UPDATE users SET balance = balance + 10, last_earn = ? WHERE user_id = ?', (now, user_id))
+    conn.commit()
+    bot.reply_to(message, "✅ Ты заработал 10 Драго! 🪙")
+
+@bot.message_handler(commands=['transfer'])
+def transfer_coins(message):
+    user_id = message.from_user.id
+    parts = message.text.split()
+
+    if len(parts) != 3:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /transfer @username количество")
+        return
+
+    target_username = parts[1].lstrip('@') 
+    amount = int(parts[2])
+
+    sender_balance = get_balance(user_id)
+    if sender_balance is None or sender_balance < amount:
+        bot.reply_to(message, "❌ Недостаточно Драго для перевода.")
+        return
+
+    if amount <= 0:
+        bot.reply_to(message, "❌ Можно переводить только положительную сумму.")
+        return
+cursor.execute('SELECT user_id FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден. Он должен был хотя бы раз написать боту /start.")
+        return
+
+    target_user_id = result[0]
+
+    if user_id == target_user_id:
+        bot.reply_to(message, "❌ Нельзя переводить самому себе.")
+        return
+
+    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
+    cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, target_user_id))
+    conn.commit()
+
+    bot.reply_to(message, f"✅ Успешно переведено {amount} Драго пользователю @{target_username}!")
+    try:
+        bot.send_message(target_user_id, f"💸 Тебе перевели {amount} Драго от @{message.from_user.username}!")
+    except:
+        pass  
+
+print("Бот запущен и слушает сообщения...")
+bot.infinity_polling()

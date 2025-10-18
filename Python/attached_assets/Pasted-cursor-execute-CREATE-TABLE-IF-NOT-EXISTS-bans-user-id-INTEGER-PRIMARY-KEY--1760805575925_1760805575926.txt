@@ -1,0 +1,759 @@
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS bans (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        banned_by TEXT,
+        ban_reason TEXT,
+        ban_date TEXT,
+        FOREIGN KEY (user_id) REFERENCES users (user_id)
+    )
+''')
+conn.commit()
+
+def is_admin(user_id, username):
+    # Администратор - только @RYBBKA_MACO
+    admin_username = "RYBBKA_MACO"
+    return username == admin_username
+
+def is_banned(user_id):
+    cursor.execute('SELECT * FROM bans WHERE user_id = ?', (user_id,))
+    return cursor.fetchone() is not None
+
+def ban_user(user_id, username, banned_by, reason="Не указана"):
+    cursor.execute('''
+        INSERT OR REPLACE INTO bans (user_id, username, banned_by, ban_reason, ban_date)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, username, banned_by, reason, datetime.now().isoformat()))
+    conn.commit()
+
+def unban_user(user_id):
+    cursor.execute('DELETE FROM bans WHERE user_id = ?', (user_id,))
+    conn.commit()
+
+@bot.message_handler(commands=['ban'])
+def ban_user_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /ban @username [причина]\nПример: /ban @username Спам")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    ban_reason = " ".join(parts[2:]) if len(parts) > 2 else "Не указана"
+
+    cursor.execute('SELECT user_id FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден.")
+        return
+    
+    target_user_id = result[0]
+    
+    if target_user_id == user_id:
+        bot.reply_to(message, "❌ Нельзя забанить самого себя.")
+        return
+    
+    if is_banned(target_user_id):
+        bot.reply_to(message, f"❌ Пользователь @{target_username} уже забанен.")
+        return
+    
+    ban_user(target_user_id, target_username, username, ban_reason)
+    
+    try:
+        bot.send_message(target_user_id, f"🚫 Вы были забанены администратором @{username}.\nПричина: {ban_reason}")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ Пользователь @{target_username} забанен.\nПричина: {ban_reason}")
+
+@bot.message_handler(commands=['unban'])
+def unban_user_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) != 2:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /unban @username\nПример: /unban @username")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    
+    cursor.execute('SELECT user_id FROM bans WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден в списке забаненных.")
+        return
+    
+    target_user_id = result[0]
+    
+    unban_user(target_user_id)
+    
+    try:
+        bot.send_message(target_user_id, f"✅ Вы были разбанены администратором @{username}.")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ Пользователь @{target_username} разбанен.")
+
+@bot.message_handler(commands=['banlist', 'bans'])
+def show_banlist(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    cursor.execute('''
+        SELECT username, banned_by, ban_reason, ban_date 
+        FROM bans 
+        ORDER BY ban_date DESC
+    ''')
+    
+    banned_users = cursor.fetchall()
+    
+    if not banned_users:
+        bot.reply_to(message, "📋 Список забаненных пользователей пуст.")
+        return
+    
+    banlist_text = "📋 **СПИСОК ЗАБАНЕННЫХ ПОЛЬЗОВАТЕЛЕЙ**\n\n"
+    
+    for i, (banned_username, banned_by, reason, ban_date) in enumerate(banned_users, 1):
+        ban_date_formatted = datetime.fromisoformat(ban_date).strftime("%d.%m.%Y %H:%M")
+        banlist_text += f"{i}. @{banned_username}\n"
+        banlist_text += f"   👮 Забанен: @{banned_by}\n"
+        banlist_text += f"   📅 Дата: {ban_date_formatted}\n"
+        banlist_text += f"   📝 Причина: {reason}\n\n"
+    
+    bot.reply_to(message, banlist_text)
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if is_banned(user_id):
+        bot.reply_to(message, "🚫 Вы забанены и не можете использовать бота.")
+        return
+        
+    add_user(user_id, username)
+    bot.reply_to(message, f"Привет, {message.from_user.first_name}! 👋 Добро пожаловать в бот валюты ролевой Chinese! 🪙\nТвой стартовый баланс: 10 Драго.\nИспользуй /help для списка команд.")
+
+@bot.message_handler(commands=['balance'])
+def show_balance(message):
+    user_id = message.from_user.id
+    
+    if is_banned(user_id):
+        bot.reply_to(message, "🚫 Вы забанены и не можете использовать бота.")
+        return
+        
+    balance = get_balance(user_id)
+    if balance is not None:
+        bot.reply_to(message, f"💰 Твой баланс: {balance} Драго.")
+    else:
+        bot.reply_to(message, "Сначала напиши /start.")
+
+@bot.message_handler(commands=['earn'])
+def earn_coins(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if is_banned(user_id):
+        bot.reply_to(message, "🚫 Вы забанены и не можете использовать бота.")
+        return
+        
+    add_user(user_id, username)
+
+    cursor.execute('SELECT last_earn FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    now = datetime.now().isoformat()
+
+    if result and result[0]:
+        last_earn = datetime.fromisoformat(result[0])
+        if datetime.now() - last_earn < timedelta(Hours=10):
+            bot.reply_to(message, "❌ Слишком рано! Зарабатывать Драго можно раз в 10 часов.")
+            return
+
+    cursor.execute('UPDATE users SET balance = balance + 10, last_earn = ? WHERE user_id = ?', (now, user_id))
+    conn.commit()
+    bot.reply_to(message, "✅ Ты заработал 10 Драго! 🪙")
+
+@bot.message_handler(commands=['transfer'])
+def transfer_coins(message):
+    user_id = message.from_user.id
+    
+    # Проверяем, не забанен ли пользователь
+    if is_banned(user_id):
+        bot.reply_to(message, "🚫 Вы забанены и не можете использовать бота.")
+        return
+        
+    parts = message.text.split()
+
+    if len(parts) != 3:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /transfer @username количество")
+        return
+
+    target_username = parts[1].lstrip('@')
+    amount = int(parts[2])
+
+    sender_balance = get_balance(user_id)
+    if sender_balance is None or sender_balance < amount:
+        bot.reply_to(message, "❌ Недостаточно Драго для перевода.")
+        return
+
+    if amount <= 0:
+        bot.reply_to(message, "❌ Можно переводить только положительную сумму.")
+        return
+
+    cursor.execute('SELECT user_id FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден. Он должен был хотя бы раз написать боту /start.")
+        return
+
+    target_user_id = result[0]
+    
+    if is_banned(target_user_id):
+        bot.reply_to(message, f"❌ Нельзя переводить Драго забаненному пользователю.")
+        return
+
+    if user_id == target_user_id:
+        bot.reply_to(message, "❌ Нельзя переводить самому себе.")
+        return
+
+    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
+    cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, target_user_id))
+    
+    transfer_time = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT INTO transfers (from_user_id, from_username, to_user_id, to_username, amount, transfer_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, message.from_user.username, target_user_id, target_username, amount, transfer_time))
+    
+    conn.commit()
+
+    bot.reply_to(message, f"✅ Успешно переведено {amount} Драго пользователю @{target_username}!")
+    try:
+        bot.send_message(target_user_id, f"💸 Тебе перевели {amount} Драго от @{message.from_user.username}!")
+    except:
+        pass 
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS admins (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        appointed_by TEXT,
+        appointed_date TEXT,
+        FOREIGN KEY (user_id) REFERENCES users (user_id)
+    )
+''')
+conn.commit()
+
+def is_admin(user_id, username):
+    # Главный администратор - @RYBBKA_MACO
+    if username == "RYBBKA_MACO":
+        return True
+    
+    cursor.execute('SELECT * FROM admins WHERE user_id = ?', (user_id,))
+    return cursor.fetchone() is not None
+
+def is_main_admin(user_id, username):
+    return username == "RYBBKA_MACO"
+
+def add_admin(user_id, username, appointed_by):
+    cursor.execute('''
+        INSERT OR REPLACE INTO admins (user_id, username, appointed_by, appointed_date)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, username, appointed_by, datetime.now().isoformat()))
+    conn.commit()
+
+def remove_admin(user_id):
+    cursor.execute('DELETE FROM admins WHERE user_id = ?', (user_id,))
+    conn.commit()
+
+def get_admin_list():
+    cursor.execute('''
+        SELECT username, appointed_by, appointed_date 
+        FROM admins 
+        ORDER BY appointed_date
+    ''')
+    return cursor.fetchall()
+
+@bot.message_handler(commands=['addadmin', 'appoint'])
+def add_admin_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_main_admin(user_id, username):
+        bot.reply_to(message, "❌ Только @RYBBKA_MACO может назначать администраторов.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) != 2:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /addadmin @username\nПример: /addadmin @ivanov")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    
+    cursor.execute('SELECT user_id FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден.")
+        return
+    
+    target_user_id = result[0]
+    
+    if is_admin(target_user_id, target_username):
+        bot.reply_to(message, f"❌ Пользователь @{target_username} уже является администратором.")
+        return
+    
+
+    if target_user_id == user_id:
+        bot.reply_to(message, "❌ Вы уже являетесь главным администратором.")
+        return
+    
+    add_admin(target_user_id, target_username, username)
+    
+
+    try:
+        bot.send_message(target_user_id, f"🎉 Поздравляем! Вас назначили администратором бота пользователем @{username}.\nТеперь вам доступны команды модерации.")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ Пользователь @{target_username} назначен администратором.")
+
+@bot.message_handler(commands=['removeadmin', 'demote'])
+def remove_admin_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_main_admin(user_id, username):
+        bot.reply_to(message, "❌ Только @RYBBKA_MACO может снимать администраторов.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) != 2:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /removeadmin @username\nПример: /removeadmin @ivanov")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    
+    cursor.execute('SELECT user_id FROM admins WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не является администратором.")
+        return
+    
+    target_user_id = result[0]
+    
+    remove_admin(target_user_id)
+    
+    try:
+        bot.send_message(target_user_id, f"ℹ️ Вы больше не являетесь администратором бота. Права снял пользователь @{username}.")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ Пользователь @{target_username} снят с должности администратора.")
+
+@bot.message_handler(commands=['adminlist', 'admins'])
+def show_admin_list(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для просмотра списка администраторов.")
+        return
+    
+    admin_list = get_admin_list()
+    
+    admin_text = "👑 **СПИСОК АДМИНИСТРАТОРОВ**\n\n"
+    
+    admin_text += "👑 **Главный администратор:**\n"
+    admin_text += f"• @RYBBKA_MACO (создатель)\n\n"
+    
+    if admin_list:
+        admin_text += "🔧 **Назначенные администраторы:**\n"
+        for i, (admin_username, appointed_by, appointed_date) in enumerate(admin_list, 1):
+            date_formatted = datetime.fromisoformat(appointed_date).strftime("%d.%m.%Y")
+            admin_text += f"{i}. @{admin_username}\n"
+            admin_text += f"   📅 Назначен: {date_formatted}\n"
+            admin_text += f"   👤 Назначил: @{appointed_by}\n\n"
+    else:
+        admin_text += "📝 Назначенных администраторов нет.\n\n"
+    
+    if is_main_admin(user_id, username):
+        admin_text += "💡 Используйте:\n/addadmin @username - назначить админа\n/removeadmin @username - снять админа"
+    
+    bot.reply_to(message, admin_text)
+
+@bot.message_handler(commands=['myadmin', 'myrights'])
+def show_my_rights(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    rights_text = "👤 **ВАШИ ПРАВА ДОСТУПА**\n\n"
+    
+    if is_main_admin(user_id, username):
+        rights_text += "👑 **Главный администратор**\n"
+        rights_text += "• Полный доступ ко всем командам\n"
+        rights_text += "• Назначение и снятие администраторов\n"
+        rights_text += "• Бан и разбан пользователей\n"
+        rights_text += "• Просмотр всей статистики\n"
+    elif is_admin(user_id, username):
+        rights_text += "🔧 **Администратор**\n"
+        rights_text += "• Бан и разбан пользователей\n"
+        rights_text += "• Просмотр списка банов\n"
+        rights_text += "• Просмотр списка администраторов\n"
+        rights_text += "• Просмотр всей статистики\n"
+    else:
+        rights_text += "👤 **Пользователь**\n"
+        rights_text += "• Основные команды экономики\n"
+        rights_text += "• Просмотр общей статистики\n"
+    
+    bot.reply_to(message, rights_text)
+
+@bot.message_handler(commands=['ban'])
+def ban_user_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /ban @username [причина]\nПример: /ban @username Спам")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    ban_reason = " ".join(parts[2:]) if len(parts) > 2 else "Не указана"
+    
+    cursor.execute('SELECT user_id FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден.")
+        return
+    
+    target_user_id = result[0]
+    
+    if is_admin(target_user_id, target_username) and not is_main_admin(user_id, username):
+        bot.reply_to(message, f"❌ Нельзя забанить другого администратора.")
+        return
+    
+    if target_user_id == user_id:
+        bot.reply_to(message, "❌ Нельзя забанить самого себя.")
+        return
+    
+    if is_banned(target_user_id):
+        bot.reply_to(message, f"❌ Пользователь @{target_username} уже забанен.")
+        return
+    
+    ban_user(target_user_id, target_username, username, ban_reason)
+    
+    try:
+        bot.send_message(target_user_id, f"🚫 Вы были забанены администратором @{username}.\nПричина: {ban_reason}")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ Пользователь @{target_username} забанен.\nПричина: {ban_reason}")
+
+@bot.message_handler(commands=['unban'])
+def unban_user_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) != 2:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /unban @username\nПример: /unban @username")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    
+    cursor.execute('SELECT user_id FROM bans WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден в списке забаненных.")
+        return
+    
+    target_user_id = result[0]
+    
+    # Разбаниваем пользователя
+    unban_user(target_user_id)
+    
+    try:
+        bot.send_message(target_user_id, f"✅ Вы были разбанены администратором @{username}.")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ Пользователь @{target_username} разбанен.")
+
+@bot.message_handler(commands=['banlist', 'bans'])
+def show_banlist(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    cursor.execute('''
+        SELECT username, banned_by, ban_reason, ban_date 
+        FROM bans 
+        ORDER BY ban_date DESC
+    ''')
+    
+    banned_users = cursor.fetchall()
+    
+    if not banned_users:
+        bot.reply_to(message, "📋 Список забаненных пользователей пуст.")
+        return
+    
+    banlist_text = "📋 **СПИСОК ЗАБАНЕННЫХ ПОЛЬЗОВАТЕЛЕЙ**\n\n"
+    
+    for i, (banned_username, banned_by, reason, ban_date) in enumerate(banned_users, 1):
+        ban_date_formatted = datetime.fromisoformat(ban_date).strftime("%d.%m.%Y %H:%M")
+        banlist_text += f"{i}. @{banned_username}\n"
+        banlist_text += f"   👮 Забанен: @{banned_by}\n"
+        banlist_text += f"   📅 Дата: {ban_date_formatted}\n"
+        banlist_text += f"   📝 Причина: {reason}\n\n"
+    
+    bot.reply_to(message, banlist_text)
+
+@bot.message_handler(commands=['buy', 'purchase', 'shop'])
+def buy_command(message):
+    buy_text = """
+🛒 **СИСТЕМА ПОКУПОК**
+
+Для совершения покупки, пожалуйста, обратитесь к @RYBBKA_MACO
+
+📝 **Что нужно указать в сообщении:**
+• Ваш username: @{}
+• Что хотите купить
+• Количество коинов для списания
+• Дополнительные детали
+
+💰 **Ваш текущий баланс:** {} Драго
+""".format(message.from_user.username, get_balance(message.from_user.id) or 0)
+    
+    bot.reply_to(message, buy_text)
+
+@bot.message_handler(commands=['buy'])
+def my_shop_command(message):
+    shop_text = """
+
+🛒 **Для покупки используйте:** /buy
+Или напишите @RYBBKA_MACO для индивидуального заказа!
+"""
+    bot.reply_to(message, shop_text)
+
+@bot.message_handler(commands=['deduct', 'removecoins', 'fine'])
+def deduct_coins_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) != 3:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /deduct @username количество\nПример: /deduct @username 50")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    
+    try:
+        amount = int(parts[2])
+        if amount <= 0:
+            bot.reply_to(message, "❌ Сумма списания должна быть положительной.")
+            return
+    except ValueError:
+        bot.reply_to(message, "❌ Неверная сумма. Используй число.")
+        return
+    
+    cursor.execute('SELECT user_id, balance FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден.")
+        return
+    
+    target_user_id, current_balance = result
+    
+
+    if is_admin(target_user_id, target_username) and not is_main_admin(user_id, username):
+        bot.reply_to(message, f"❌ Нельзя списывать средства у другого администратора.")
+        return
+    
+    if current_balance < amount:
+        bot.reply_to(message, f"❌ Недостаточно средств. У @{target_username} только {current_balance} коинов.")
+        return
+    
+    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, target_user_id))
+    conn.commit()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS deductions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            amount INTEGER,
+            deducted_by TEXT,
+            reason TEXT,
+            deduct_date TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    
+    deduct_time = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT INTO deductions (user_id, username, amount, deducted_by, deduct_date)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (target_user_id, target_username, amount, username, deduct_time))
+    conn.commit()
+    
+    try:
+        bot.send_message(target_user_id, f"📉 С вашего счета списано {amount} Драго администратором @{username}.\nНовый баланс: {current_balance - amount} Драго.")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ С пользователя @{target_username} списано {amount} коинов.\nПредыдущий баланс: {current_balance}\nНовый баланс: {current_balance - amount}")
+
+@bot.message_handler(commands=['deductwithreason', 'finewithreason'])
+def deduct_with_reason_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) < 4:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /deductwithreason @username количество причина\nПример: /deductwithreason @username 50 Нарушение правил")
+        return
+    
+    target_username = parts[1].lstrip('@')
+    
+    try:
+        amount = int(parts[2])
+        if amount <= 0:
+            bot.reply_to(message, "❌ Сумма списания должна быть положительной.")
+            return
+    except ValueError:
+        bot.reply_to(message, "❌ Неверная сумма. Используй число.")
+        return
+    
+    reason = " ".join(parts[3:])
+    
+    cursor.execute('SELECT user_id, balance FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+    
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден.")
+        return
+    
+    target_user_id, current_balance = result
+    
+
+    if is_admin(target_user_id, target_username) and not is_main_admin(user_id, username):
+        bot.reply_to(message, f"❌ Нельзя списывать средства у другого администратора.")
+
+    if current_balance < amount:
+        bot.reply_to(message, f"❌ Недостаточно средств. У @{target_username} только {current_balance} коинов.")
+        return
+    
+    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, target_user_id))
+    conn.commit()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS deductions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            amount INTEGER,
+            deducted_by TEXT,
+            reason TEXT,
+            deduct_date TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+    
+    deduct_time = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT INTO deductions (user_id, username, amount, deducted_by, reason, deduct_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (target_user_id, target_username, amount, username, reason, deduct_time))
+    conn.commit()
+    
+    try:
+        bot.send_message(target_user_id, f"📉 С вашего счета списано {amount} коинов администратором @{username}.\nПричина: {reason}\nНовый баланс: {current_balance - amount} Драго.")
+    except:
+        pass
+    
+    bot.reply_to(message, f"✅ С пользователя @{target_username} списано {amount} Драго.\nПричина: {reason}\nПредыдущий баланс: {current_balance}\nНовый баланс: {current_balance - amount}")
+
+@bot.message_handler(commands=['deductionhistory', 'fineshistory'])
+def deduction_history_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    
+    if not is_admin(user_id, username):
+        bot.reply_to(message, "❌ У вас нет прав для использования этой команды.")
+        return
+
+    cursor.execute('''
+        SELECT username, amount, deducted_by, reason, deduct_date 
+        FROM deductions 
+        ORDER BY deduct_date DESC 
+        LIMIT 20
+    ''')
+    
+    deductions = cursor.fetchall()
+    
+    if not deductions:
+        bot.reply_to(message, "📝 История списаний пуста.")
+        return
+    
+    history_text = "📋 **ИСТОРИЯ СПИСАНИЙ** (последние 20 операций)\n\n"
+    
+    for i, (target_username, amount, deducted_by, reason, deduct_date) in enumerate(deductions, 1):
+        date_formatted = datetime.fromisoformat(deduct_date).strftime("%d.%m.%Y %H:%M")
+        reason_text = reason if reason else "Не указана"
+        
+        history_text += f"{i}. @{target_username}\n"
+        history_text += f"   💰 Сумма: {amount} коинов\n"
+        history_text += f"   👮 Списал: @{deducted_by}\n"
+        history_text += f"   📅 Дата: {date_formatted}\n"
+        history_text += f"   📝 Причина: {reason_text}\n\n"
+    
+    bot.reply_to(message, history_text)

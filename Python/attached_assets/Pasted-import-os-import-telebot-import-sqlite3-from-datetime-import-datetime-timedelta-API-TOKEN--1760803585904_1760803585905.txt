@@ -1,0 +1,281 @@
+import os
+import telebot
+import sqlite3
+from datetime import datetime, timedelta
+
+API_TOKEN = '7628466810:AAHIiGViWOH3W6C7FbxQd0KZzqzFWcy3zKA'
+
+bot = telebot.TeleBot(API_TOKEN)
+
+conn = sqlite3.connect('users.db', check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        balance INTEGER DEFAULT 10,
+        last_earn TEXT,
+        registered_date TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS transfers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_user_id INTEGER,
+        from_username TEXT,
+        to_user_id INTEGER,
+        to_username TEXT,
+        amount INTEGER,
+        transfer_date TEXT,
+        FOREIGN KEY (from_user_id) REFERENCES users (user_id),
+        FOREIGN KEY (to_user_id) REFERENCES users (user_id)
+    )
+''')
+conn.commit()
+
+@bot.message_handler(commands=['transfer'])
+def transfer_coins(message):
+    user_id = message.from_user.id
+    parts = message.text.split()
+
+    if len(parts) != 3:
+        bot.reply_to(message, "❌ Неправильный формат. Используй: /transfer @username количество")
+        return
+
+    target_username = parts[1].lstrip('@')
+    amount = int(parts[2])
+
+    sender_balance = get_balance(user_id)
+    if sender_balance is None or sender_balance < amount:
+        bot.reply_to(message, "❌ Недостаточно коинов для перевода.")
+        return
+
+    if amount <= 0:
+        bot.reply_to(message, "❌ Можно переводить только положительную сумму.")
+        return
+
+    cursor.execute('SELECT user_id FROM users WHERE username = ?', (target_username,))
+    result = cursor.fetchone()
+
+    if not result:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден. Он должен был хотя бы раз написать боту /start.")
+        return
+
+    target_user_id = result[0]
+е
+    if user_id == target_user_id:
+        bot.reply_to(message, "❌ Нельзя переводить самому себе.")
+        return
+
+    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
+    cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, target_user_id))
+    
+    transfer_time = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT INTO transfers (from_user_id, from_username, to_user_id, to_username, amount, transfer_date)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, message.from_user.username, target_user_id, target_username, amount, transfer_time))
+    
+    conn.commit()
+
+    bot.reply_to(message, f"✅ Успешно переведено {amount} =Драго пользователю @{target_username}!")
+    try:
+        bot.send_message(target_user_id, f"💸 Тебе перевели {amount} Драго от @{message.from_user.username}!")
+    except:
+        pass
+
+@bot.message_handler(commands=['stats', 'statistics'])
+def show_stats(message):
+    cursor.execute('SELECT COUNT(*) as total_users, SUM(balance) as total_coins FROM users')
+    user_stats = cursor.fetchone()
+    total_users, total_coins = user_stats
+    
+    cursor.execute('SELECT username, balance FROM users ORDER BY balance DESC LIMIT 1')
+    richest_user = cursor.fetchone()
+    richest_username, richest_balance = richest_user if richest_user else ("Нет данных", 0)
+    
+    cursor.execute('SELECT COUNT(*) FROM transfers')
+    total_transfers = cursor.fetchone()[0]
+    
+    # Общая сумма всех переводов
+    cursor.execute('SELECT SUM(amount) FROM transfers')
+    total_transferred = cursor.fetchone()[0] or 0
+    
+    stats_text = f"""
+📊 **ОБЩАЯ СТАТИСТИКА СИСТЕМЫ**
+
+👥 Всего пользователей: {total_users}
+💰 Всего коинов в системе: {total_coins} 🪙
+🏆 Самый богатый: @{richest_username} ({richest_balance} Драго)
+📤 Всего переводов: {total_transfers}
+💸 Всего переведено: {total_transferred} Драго
+
+Для детальной статистики переводов:
+/stats_day - за сегодня
+/stats_week - за неделю
+/stats_month - за месяц
+"""
+    bot.reply_to(message, stats_text)
+
+@bot.message_handler(commands=['stats_day'])
+def show_stats_day(message):
+    today = datetime.now().date().isoformat()
+    
+    cursor.execute('''
+        SELECT COUNT(*) as transfers_count, SUM(amount) as total_amount 
+        FROM transfers 
+        WHERE date(transfer_date) = date(?)
+    ''', (today,))
+    
+    stats = cursor.fetchone()
+    transfers_count, total_amount = stats
+    total_amount = total_amount or 0
+    
+    cursor.execute('''
+        SELECT from_username, to_username, amount 
+        FROM transfers 
+        WHERE date(transfer_date) = date(?)
+        ORDER BY amount DESC LIMIT 1
+    ''', (today,))
+    
+    largest_transfer = cursor.fetchone()
+    
+    stats_text = f"""
+📊 **СТАТИСТИКА ЗА СЕГОДНЯ** ({today})
+
+🔄 Количество переводов: {transfers_count}
+💰 Сумма переводов: {total_amount} коинов
+"""
+    
+    if largest_transfer:
+        from_user, to_user, amount = largest_transfer
+        stats_text += f"🏆 Крупнейший перевод: {amount} коинов от @{from_user} к @{to_user}"
+    
+    bot.reply_to(message, stats_text)
+
+@bot.message_handler(commands=['stats_week'])
+def show_stats_week(message):
+    week_ago = (datetime.now() - timedelta(days=7)).date().isoformat()
+    
+    cursor.execute('''
+        SELECT COUNT(*) as transfers_count, SUM(amount) as total_amount 
+        FROM transfers 
+        WHERE date(transfer_date) >= date(?)
+    ''', (week_ago,))
+    
+    stats = cursor.fetchone()
+    transfers_count, total_amount = stats
+    total_amount = total_amount or 0
+    
+    cursor.execute('''
+        SELECT from_username, COUNT(*) as transfer_count
+        FROM transfers 
+        WHERE date(transfer_date) >= date(?)
+        GROUP BY from_user_id 
+        ORDER BY transfer_count DESC 
+        LIMIT 1
+    ''', (week_ago,))
+    
+    active_sender = cursor.fetchone()
+    
+    stats_text = f"""
+📊 **СТАТИСТИКА ЗА НЕДЕЛЮ** (с {week_ago})
+
+🔄 Количество переводов: {transfers_count}
+💰 Сумма переводов: {total_amount} коинов
+"""
+    
+    if active_sender:
+        sender_username, transfer_count = active_sender
+        stats_text += f"🎯 Самый активный: @{sender_username} ({transfer_count} переводов)"
+    
+    bot.reply_to(message, stats_text)
+
+@bot.message_handler(commands=['stats_month'])
+def show_stats_month(message):
+    month_ago = (datetime.now() - timedelta(days=30)).date().isoformat()
+    
+    cursor.execute('''
+        SELECT COUNT(*) as transfers_count, SUM(amount) as total_amount 
+        FROM transfers 
+        WHERE date(transfer_date) >= date(?)
+    ''', (month_ago,))
+    
+    stats = cursor.fetchone()
+    transfers_count, total_amount = stats
+    total_amount = total_amount or 0
+    
+    cursor.execute('''
+        SELECT to_username, SUM(amount) as received 
+        FROM transfers 
+        WHERE date(transfer_date) >= date(?)
+        GROUP BY to_user_id 
+        ORDER BY received DESC 
+        LIMIT 3
+    ''', (month_ago,))
+    
+    top_receivers = cursor.fetchall()
+    
+    stats_text = f"""
+📊 **СТАТИСТИКА ЗА МЕСЯЦ** (последние 30 дней)
+
+🔄 Количество переводов: {transfers_count}
+💰 Сумма переводов: {total_amount} коинов
+"""
+    
+    if top_receivers:
+        stats_text += "\n🏆 Топ-3 получателей:\n"
+        for i, (username, amount) in enumerate(top_receivers, 1):
+            stats_text += f"{i}. @{username} - {amount} коинов\n"
+    
+    bot.reply_to(message, stats_text)
+
+@bot.message_handler(commands=['top', 'rich'])
+def show_top_users(message):
+    cursor.execute('''
+        SELECT username, balance 
+        FROM users 
+        WHERE username IS NOT NULL 
+        ORDER BY balance DESC 
+        LIMIT 10
+    ''')
+    
+    top_users = cursor.fetchall()
+    
+    top_text = "🏆 **ТОП-10 САМЫХ БОГАТЫХ ПОЛЬЗОВАТЕЛЕЙ**\n\n"
+    
+    for i, (username, balance) in enumerate(top_users, 1):
+        medal = ""
+        if i == 1: medal = "🥇"
+        elif i == 2: medal = "🥈" 
+        elif i == 3: medal = "🥉"
+        else: medal = f"{i}."
+        
+        top_text += f"{medal} @{username} - {balance} коинов 🪙\n"
+    
+    bot.reply_to(message, top_text)
+@bot.message_handler(commands=['help'])
+def send_help(message):
+    help_text = """
+💫 **ДОСТУПНЫЕ КОМАНДЫ:**
+
+💰 **Экономика:**
+/balance - Мой баланс
+/checkbalance @username - Баланс другого пользователя
+/earn - Заработать 10 коинов (раз в 5 мин)
+/transfer @username сумма - Перевести коины
+
+📊 **Статистика:**
+/stats - Общая статистика системы
+/top - Топ-10 самых богатых
+/stats_day - Статистика переводов за день
+/stats_week - Статистика переводов за неделю
+/stats_month - Статистика переводов за месяц
+
+Примеры:
+/transfer @ivanov 50
+/checkbalance @petr
+"""
+    bot.reply_to(message, help_text)
